@@ -3,11 +3,13 @@
 import React, {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { Camera, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 import MouthGuide from "./MouthGuide";
+import QuickMessageSidebar from "./QuickMessageSidebar";
 import { useFrameStability } from "@/hooks/useFrameStability";
 
 type View = {
@@ -151,6 +153,12 @@ export default function ScanningFlow() {
   }, [currentStep, capturedImages, submit.status]);
 
   const captureReady = camReady && (quality === "good" || quality === "fair");
+  const scanId = submit.status === "done" ? submit.scanId : null;
+
+  const headerLabel = useMemo(
+    () => (capturing ? VIEWS[currentStep].label : "Scan complete"),
+    [capturing, currentStep],
+  );
 
   return (
     <div className="flex min-h-screen flex-col items-center bg-black text-white">
@@ -159,7 +167,7 @@ export default function ScanningFlow() {
           DentalScan AI
         </h1>
         <span className="text-[11px] uppercase tracking-widest text-zinc-500">
-          {capturing ? `Step ${currentStep + 1} / ${VIEWS.length}` : "Scan complete"}
+          {capturing ? `Step ${currentStep + 1} / ${VIEWS.length}` : headerLabel}
         </span>
       </div>
 
@@ -206,7 +214,8 @@ export default function ScanningFlow() {
                 <CheckCircle2 size={44} className="text-emerald-400" />
                 <h2 className="text-lg font-semibold">Scan uploaded</h2>
                 <p className="max-w-xs text-xs text-zinc-400">
-                  Your clinic has been notified. They&apos;ll review the scan shortly.
+                  Your clinic has been notified. They&apos;ll review the scan and
+                  reply in the chat below.
                 </p>
                 <p className="text-[10px] text-zinc-600">
                   Reference: {submit.scanId.slice(0, 12)}
@@ -309,6 +318,11 @@ export default function ScanningFlow() {
           );
         })}
       </div>
+
+      <QuickMessageSidebar
+        scanId={scanId}
+        defaultOpen={submit.status === "done"}
+      />
     </div>
   );
 }
