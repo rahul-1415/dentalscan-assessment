@@ -1,130 +1,240 @@
 "use client";
 
-import React, { useState, useRef, useCallback, useEffect } from "react";
-import { Camera, RefreshCw, CheckCircle2 } from "lucide-react";
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import { Camera, CheckCircle2, RefreshCw } from "lucide-react";
+import MouthGuide from "./MouthGuide";
+import { useFrameStability } from "@/hooks/useFrameStability";
 
-/**
- * CHALLENGE: SCAN ENHANCEMENT
- *
- * Your goal is to improve the User Experience of the Scanning Flow.
- * 1. Implement a Visual Guidance Overlay (e.g., a circle or mouth outline) on the video feed.
- * 2. Add real-time feedback to the user (e.g., "Face not centered", "Move closer").
- * 3. Ensure the UI feels premium and responsive.
- */
+type View = {
+  label: string;
+  instruction: string;
+};
+
+const VIEWS: View[] = [
+  { label: "Front View", instruction: "Smile and look straight at the camera." },
+  { label: "Left View", instruction: "Turn your head to the left." },
+  { label: "Right View", instruction: "Turn your head to the right." },
+  { label: "Upper Teeth", instruction: "Tilt your head back and open wide." },
+  { label: "Lower Teeth", instruction: "Tilt your head down and open wide." },
+];
 
 export default function ScanningFlow() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [camReady, setCamReady] = useState(false);
+  const [camError, setCamError] = useState<string | null>(null);
   const [capturedImages, setCapturedImages] = useState<string[]>([]);
   const [currentStep, setCurrentStep] = useState(0);
 
-  const VIEWS = [
-    { label: "Front View", instruction: "Smile and look straight at the camera." },
-    { label: "Left View", instruction: "Turn your head to the left." },
-    { label: "Right View", instruction: "Turn your head to the right." },
-    { label: "Upper Teeth", instruction: "Tilt your head back and open wide." },
-    { label: "Lower Teeth", instruction: "Tilt your head down and open wide." },
-  ];
+  const capturing = currentStep < VIEWS.length;
+  const { stability, quality } = useFrameStability(videoRef, capturing && camReady);
 
-  // Initialize Camera
-  useEffect(() => {
-    async function startCamera() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          setCamReady(true);
-        }
-      } catch (err) {
-        console.error("Camera access denied", err);
-      }
-    }
-    startCamera();
+  const stopStream = useCallback(() => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    setCamReady(false);
   }, []);
+
+  const startCamera = useCallback(async () => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setCamError("Camera API not available in this browser.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: "user",
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        setCamReady(true);
+        setCamError(null);
+      }
+    } catch (err) {
+      console.error("Camera access denied", err);
+      setCamError(
+        "Camera access was blocked. Enable permissions in your browser and reload.",
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    if (capturing) {
+      void startCamera();
+    } else {
+      stopStream();
+    }
+    return () => stopStream();
+  }, [capturing, startCamera, stopStream]);
 
   const handleCapture = useCallback(() => {
-    // Boilerplate logic for capturing a frame from the video feed
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || video.readyState < 2) return;
 
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    const canvas = captureCanvasRef.current ?? document.createElement("canvas");
+    captureCanvasRef.current = canvas;
+    // Downscale to ~720p max to keep payloads sane.
+    const maxEdge = 1280;
+    const scale = Math.min(1, maxEdge / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
     const ctx = canvas.getContext("2d");
-    if (ctx) {
-      ctx.drawImage(video, 0, 0);
-      const dataUrl = canvas.toDataURL("image/jpeg");
-      setCapturedImages((prev) => [...prev, dataUrl]);
-      setCurrentStep((prev) => prev + 1);
-    }
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+    setCapturedImages((prev) => [...prev, dataUrl]);
+    setCurrentStep((prev) => prev + 1);
   }, []);
 
+  const handleRetake = useCallback((index: number) => {
+    setCapturedImages((prev) => prev.slice(0, index));
+    setCurrentStep(index);
+  }, []);
+
+  const handleReset = useCallback(() => {
+    setCapturedImages([]);
+    setCurrentStep(0);
+  }, []);
+
+  const captureReady = camReady && (quality === "good" || quality === "fair");
+
   return (
-    <div className="flex flex-col items-center bg-black min-h-screen text-white">
-      {/* Header */}
-      <div className="p-4 w-full bg-zinc-900 border-b border-zinc-800 flex justify-between">
-        <h1 className="font-bold text-blue-400">DentalScan AI</h1>
-        <span className="text-xs text-zinc-500">Step {currentStep + 1}/5</span>
+    <div className="flex min-h-screen flex-col items-center bg-black text-white">
+      <div className="flex w-full items-center justify-between border-b border-zinc-800 bg-zinc-900/80 px-4 py-3 backdrop-blur">
+        <h1 className="text-sm font-semibold tracking-tight text-blue-400">
+          DentalScan AI
+        </h1>
+        <span className="text-[11px] uppercase tracking-widest text-zinc-500">
+          {capturing ? `Step ${currentStep + 1} / ${VIEWS.length}` : "Scan complete"}
+        </span>
       </div>
 
-      {/* Main Viewport */}
-      <div className="relative w-full max-w-md aspect-[3/4] bg-zinc-950 overflow-hidden flex items-center justify-center">
-        {currentStep < 5 ? (
+      <div className="relative flex aspect-[3/4] w-full max-w-md items-center justify-center overflow-hidden bg-zinc-950">
+        {capturing ? (
           <>
             <video
               ref={videoRef}
               autoPlay
               playsInline
-              className="w-full h-full object-cover grayscale opacity-80"
+              muted
+              className="h-full w-full -scale-x-100 object-cover"
+              aria-label="Live camera preview"
             />
 
-            {/* TODO: Implement the Guidance Overlay here */}
-            <div className="absolute inset-0 border-2 border-dashed border-zinc-700 pointer-events-none flex items-center justify-center">
-               <span className="text-[10px] text-zinc-500 uppercase tracking-widest">Guidance Placeholder</span>
-            </div>
+            {camError && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/80 px-6 text-center text-sm text-red-300">
+                {camError}
+              </div>
+            )}
 
-            {/* Instruction Overlay */}
-            <div className="absolute bottom-10 left-0 right-0 p-6 bg-gradient-to-t from-black to-transparent text-center">
-              <p className="text-sm font-medium">{VIEWS[currentStep].instruction}</p>
-            </div>
+            {!camError && (
+              <MouthGuide
+                quality={camReady ? quality : "idle"}
+                stability={stability}
+                label={VIEWS[currentStep].label}
+                hint={VIEWS[currentStep].instruction}
+              />
+            )}
           </>
         ) : (
-          <div className="text-center p-10">
-            <CheckCircle2 size={48} className="text-green-500 mx-auto mb-4" />
-            <h2 className="text-xl font-bold">Scan Complete</h2>
-            <p className="text-zinc-400 mt-2">Uploading results...</p>
+          <div className="flex flex-col items-center gap-3 p-10 text-center">
+            <CheckCircle2 size={44} className="text-emerald-400" />
+            <h2 className="text-lg font-semibold">Scan complete</h2>
+            <p className="max-w-xs text-xs text-zinc-400">
+              All {VIEWS.length} angles captured.
+            </p>
           </div>
         )}
       </div>
 
-      {/* Controls */}
-      <div className="p-10 w-full flex justify-center">
-        {currentStep < 5 && (
+      <div className="flex w-full flex-col items-center gap-3 px-6 py-6">
+        {capturing ? (
+          <>
+            <button
+              onClick={handleCapture}
+              disabled={!captureReady}
+              aria-label={`Capture ${VIEWS[currentStep].label}`}
+              className="group flex h-20 w-20 items-center justify-center rounded-full border-4 border-white transition-transform active:scale-90 disabled:cursor-not-allowed disabled:border-zinc-700"
+            >
+              <div
+                className={`flex h-16 w-16 items-center justify-center rounded-full transition-colors ${
+                  captureReady
+                    ? quality === "good"
+                      ? "bg-emerald-400"
+                      : "bg-amber-400"
+                    : "bg-zinc-700"
+                }`}
+              >
+                <Camera
+                  className={captureReady ? "text-black" : "text-zinc-400"}
+                />
+              </div>
+            </button>
+            <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">
+              {captureReady
+                ? "Tap to capture"
+                : camReady
+                  ? "Waiting for a stable frame"
+                  : "Starting camera…"}
+            </p>
+          </>
+        ) : (
           <button
-            onClick={handleCapture}
-            className="w-20 h-20 rounded-full border-4 border-white flex items-center justify-center active:scale-90 transition-transform"
+            onClick={handleReset}
+            className="inline-flex items-center gap-2 rounded-full border border-zinc-700 px-4 py-2 text-xs text-zinc-300 hover:border-blue-500 hover:text-white"
           >
-            <div className="w-16 h-16 rounded-full bg-white flex items-center justify-center">
-               <Camera className="text-black" />
-            </div>
+            <RefreshCw size={14} /> Start a new scan
           </button>
         )}
       </div>
 
-      {/* Thumbnails */}
-      <div className="flex gap-2 p-4 overflow-x-auto w-full">
-        {VIEWS.map((v, i) => (
-          <div
-            key={i}
-            className={`w-16 h-20 rounded border-2 shrink-0 ${i === currentStep ? 'border-blue-500 bg-blue-500/10' : 'border-zinc-800'}`}
-          >
-            {capturedImages[i] ? (
-               <img src={capturedImages[i]} className="w-full h-full object-cover" />
-            ) : (
-               <div className="w-full h-full flex items-center justify-center text-[10px] text-zinc-700">{i+1}</div>
-            )}
-          </div>
-        ))}
+      <div className="flex w-full gap-2 overflow-x-auto px-4 pb-6">
+        {VIEWS.map((v, i) => {
+          const filled = Boolean(capturedImages[i]);
+          const active = i === currentStep;
+          return (
+            <button
+              key={v.label}
+              onClick={() => (filled ? handleRetake(i) : undefined)}
+              disabled={!filled}
+              className={`relative flex h-20 w-16 shrink-0 flex-col overflow-hidden rounded-lg border-2 text-left transition ${
+                active
+                  ? "border-blue-500 bg-blue-500/10"
+                  : filled
+                    ? "border-zinc-700 hover:border-blue-500"
+                    : "border-zinc-800"
+              }`}
+              aria-label={filled ? `Retake ${v.label}` : `${v.label} not yet captured`}
+            >
+              {filled ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={capturedImages[i]}
+                  alt={v.label}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-[10px] text-zinc-600">
+                  {i + 1}
+                </div>
+              )}
+              <span className="absolute inset-x-0 bottom-0 truncate bg-black/70 px-1 py-0.5 text-[9px] uppercase tracking-wider text-zinc-300">
+                {v.label.replace(" View", "")}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
