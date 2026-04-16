@@ -6,7 +6,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Camera, CheckCircle2, RefreshCw } from "lucide-react";
+import { Camera, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 import MouthGuide from "./MouthGuide";
 import { useFrameStability } from "@/hooks/useFrameStability";
 
@@ -23,6 +23,12 @@ const VIEWS: View[] = [
   { label: "Lower Teeth", instruction: "Tilt your head down and open wide." },
 ];
 
+type SubmitState =
+  | { status: "idle" }
+  | { status: "submitting" }
+  | { status: "done"; scanId: string }
+  | { status: "error"; message: string };
+
 export default function ScanningFlow() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -31,6 +37,7 @@ export default function ScanningFlow() {
   const [camError, setCamError] = useState<string | null>(null);
   const [capturedImages, setCapturedImages] = useState<string[]>([]);
   const [currentStep, setCurrentStep] = useState(0);
+  const [submit, setSubmit] = useState<SubmitState>({ status: "idle" });
 
   const capturing = currentStep < VIEWS.length;
   const { stability, quality } = useFrameStability(videoRef, capturing && camReady);
@@ -100,12 +107,48 @@ export default function ScanningFlow() {
   const handleRetake = useCallback((index: number) => {
     setCapturedImages((prev) => prev.slice(0, index));
     setCurrentStep(index);
+    setSubmit({ status: "idle" });
   }, []);
 
   const handleReset = useCallback(() => {
     setCapturedImages([]);
     setCurrentStep(0);
+    setSubmit({ status: "idle" });
   }, []);
+
+  // Once all 5 frames are captured, upload the scan and trigger notification.
+  useEffect(() => {
+    if (currentStep !== VIEWS.length || submit.status !== "idle") return;
+    let cancelled = false;
+
+    (async () => {
+      setSubmit({ status: "submitting" });
+      try {
+        const res = await fetch("/api/scans", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: "completed",
+            images: capturedImages,
+          }),
+        });
+        if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+        const data = (await res.json()) as { scan: { id: string } };
+        if (!cancelled) setSubmit({ status: "done", scanId: data.scan.id });
+      } catch (e) {
+        if (!cancelled) {
+          setSubmit({
+            status: "error",
+            message: e instanceof Error ? e.message : "Upload failed",
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentStep, capturedImages, submit.status]);
 
   const captureReady = camReady && (quality === "good" || quality === "fair");
 
@@ -148,12 +191,42 @@ export default function ScanningFlow() {
             )}
           </>
         ) : (
-          <div className="flex flex-col items-center gap-3 p-10 text-center">
-            <CheckCircle2 size={44} className="text-emerald-400" />
-            <h2 className="text-lg font-semibold">Scan complete</h2>
-            <p className="max-w-xs text-xs text-zinc-400">
-              All {VIEWS.length} angles captured.
-            </p>
+          <div className="flex flex-col items-center gap-4 p-10 text-center">
+            {submit.status === "submitting" && (
+              <>
+                <Loader2 size={40} className="animate-spin text-blue-400" />
+                <h2 className="text-lg font-semibold">Uploading your scan…</h2>
+                <p className="text-xs text-zinc-400">
+                  Securely sending {capturedImages.length} frames to the clinic.
+                </p>
+              </>
+            )}
+            {submit.status === "done" && (
+              <>
+                <CheckCircle2 size={44} className="text-emerald-400" />
+                <h2 className="text-lg font-semibold">Scan uploaded</h2>
+                <p className="max-w-xs text-xs text-zinc-400">
+                  Your clinic has been notified. They&apos;ll review the scan shortly.
+                </p>
+                <p className="text-[10px] text-zinc-600">
+                  Reference: {submit.scanId.slice(0, 12)}
+                </p>
+              </>
+            )}
+            {submit.status === "error" && (
+              <>
+                <h2 className="text-lg font-semibold text-red-300">
+                  Upload failed
+                </h2>
+                <p className="text-xs text-zinc-400">{submit.message}</p>
+                <button
+                  onClick={() => setSubmit({ status: "idle" })}
+                  className="rounded-full border border-zinc-700 px-4 py-1.5 text-xs text-zinc-200 hover:border-blue-500"
+                >
+                  Retry upload
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
