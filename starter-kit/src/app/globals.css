@@ -12,3 +12,38 @@ body {
   color: rgb(var(--foreground-rgb));
   background: rgb(var(--background-start-rgb));
 }
+
+/* Countdown numeral: enters large + faded, settles at rest. */
+@keyframes countdown-num-in {
+  0% {
+    opacity: 0;
+    transform: scale(1.55);
+  }
+  40% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Concentric ring that expands outward and fades — signals the tick. */
+@keyframes countdown-ring-out {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.7);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.1);
+  }
+}
+
+.countdown-num {
+  animation: countdown-num-in 0.55s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.countdown-ring {
+  animation: countdown-ring-out 0.7s ease-out both;
+}

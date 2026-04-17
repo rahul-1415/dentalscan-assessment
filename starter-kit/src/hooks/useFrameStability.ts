@@ -10,6 +10,7 @@ type Options = {
   smoothing?: number;
   goodThreshold?: number;
   fairThreshold?: number;
+  skinRatioThreshold?: number;
 };
 
 /**
@@ -29,18 +30,24 @@ export function useFrameStability(
     sampleSize = 64,
     sampleIntervalMs = 120,
     smoothing = 0.75,
-    goodThreshold = 0.82,
+    goodThreshold = 0.9,
     fairThreshold = 0.55,
+    // Fraction of the frame that must look skin-colored for a face to be
+    // considered "likely present." 12% is generous enough for a face at arm's
+    // length but still rejects walls/ceilings/desks.
+    skinRatioThreshold = 0.12,
   } = opts;
 
   const [stability, setStability] = useState(0);
   const [quality, setQuality] = useState<Quality>("idle");
+  const [facePresent, setFacePresent] = useState(false);
   const stabilityRef = useRef(0);
 
   useEffect(() => {
     if (!active) {
       setQuality("idle");
       setStability(0);
+      setFacePresent(false);
       stabilityRef.current = 0;
       return;
     }
@@ -68,15 +75,37 @@ export function useFrameStability(
       ctx.drawImage(video, 0, 0, sampleSize, sampleSize);
       const frame = ctx.getImageData(0, 0, sampleSize, sampleSize).data;
 
-      if (prev) {
-        let acc = 0;
-        // Sample one channel (R) — correlated enough with luminance for
-        // motion detection and half the work of computing true luma.
-        for (let i = 0; i < frame.length; i += 4) {
-          const d = frame[i] - prev[i];
+      // Skin-tone gate: count pixels that roughly match human skin using a
+      // simple RGB heuristic (Kovac et al., daylight rule). Cheap enough to
+      // piggyback on the frame we already decoded.
+      let skinCount = 0;
+      let acc = 0;
+      for (let i = 0; i < frame.length; i += 4) {
+        const r = frame[i];
+        const g = frame[i + 1];
+        const b = frame[i + 2];
+        if (
+          r > 95 &&
+          g > 40 &&
+          b > 20 &&
+          r > g &&
+          r > b &&
+          r - Math.min(g, b) > 15 &&
+          Math.abs(r - g) > 15
+        ) {
+          skinCount++;
+        }
+        if (prev) {
+          const d = r - prev[i];
           acc += d < 0 ? -d : d;
         }
-        const meanDiff = acc / (sampleSize * sampleSize);
+      }
+      const totalPixels = sampleSize * sampleSize;
+      const skinRatio = skinCount / totalPixels;
+      setFacePresent(skinRatio >= skinRatioThreshold);
+
+      if (prev) {
+        const meanDiff = acc / totalPixels;
         // 0 diff → 1.0 stability; ~30 diff → 0. Past 30 clamps to 0.
         const raw = Math.max(0, Math.min(1, 1 - meanDiff / 30));
         const smoothed =
@@ -109,7 +138,8 @@ export function useFrameStability(
     smoothing,
     goodThreshold,
     fairThreshold,
+    skinRatioThreshold,
   ]);
 
-  return { stability, quality };
+  return { stability, quality, facePresent };
 }

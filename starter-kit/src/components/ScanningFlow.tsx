@@ -7,7 +7,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Camera, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
+import { Camera, CheckCircle2, Loader2, RefreshCw, X } from "lucide-react";
 import MouthGuide from "./MouthGuide";
 import QuickMessageSidebar from "./QuickMessageSidebar";
 import { useFrameStability } from "@/hooks/useFrameStability";
@@ -37,12 +37,22 @@ export default function ScanningFlow() {
   const captureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [camReady, setCamReady] = useState(false);
   const [camError, setCamError] = useState<string | null>(null);
-  const [capturedImages, setCapturedImages] = useState<string[]>([]);
+  // Sparse array indexed by view — lets users retake any single slot without
+  // erasing later captures. `currentStep` is the slot being filmed right now.
+  const [capturedImages, setCapturedImages] = useState<(string | null)[]>(
+    () => Array(VIEWS.length).fill(null),
+  );
   const [currentStep, setCurrentStep] = useState(0);
+  const [captureBlockedUntil, setCaptureBlockedUntil] = useState(0);
   const [submit, setSubmit] = useState<SubmitState>({ status: "idle" });
 
-  const capturing = currentStep < VIEWS.length;
-  const { stability, quality } = useFrameStability(videoRef, capturing && camReady);
+  const allCaptured = capturedImages.every((img) => img !== null);
+  const capturing = !allCaptured;
+  const { stability, quality, facePresent } = useFrameStability(
+    videoRef,
+    capturing && camReady,
+  );
+  const [countdown, setCountdown] = useState<number | null>(null);
 
   const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -102,25 +112,66 @@ export default function ScanningFlow() {
     if (!ctx) return;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
-    setCapturedImages((prev) => [...prev, dataUrl]);
-    setCurrentStep((prev) => prev + 1);
-  }, []);
+    setCapturedImages((prev) => {
+      const next = [...prev];
+      next[currentStep] = dataUrl;
+      // After filling the current slot, advance to the next empty slot (if any)
+      // so retakes return control to wherever the user still has gaps.
+      const nextEmpty = next.findIndex((img) => img === null);
+      setCurrentStep(nextEmpty === -1 ? VIEWS.length : nextEmpty);
+      return next;
+    });
+    // Block auto-capture for 2 s after each shot so the user can reposition.
+    setCaptureBlockedUntil(Date.now() + 2000);
+    setSubmit({ status: "idle" });
+  }, [currentStep]);
 
   const handleRetake = useCallback((index: number) => {
-    setCapturedImages((prev) => prev.slice(0, index));
+    setCapturedImages((prev) => {
+      const next = [...prev];
+      next[index] = null;
+      return next;
+    });
     setCurrentStep(index);
     setSubmit({ status: "idle" });
   }, []);
 
   const handleReset = useCallback(() => {
-    setCapturedImages([]);
+    setCapturedImages(Array(VIEWS.length).fill(null));
     setCurrentStep(0);
     setSubmit({ status: "idle" });
   }, []);
 
+  // Auto-capture countdown: once the frame is stable enough, tick 3→2→1 and
+  // fire the capture. Any dip back to "poor" cancels and restarts on re-stability.
+  // Depending on `currentStep` ensures the countdown re-arms after each capture
+  // even if `stable` happens to stay true across the step transition.
+  const stable = facePresent && quality === "good";
+  useEffect(() => {
+    if (!capturing || !camReady) {
+      setCountdown(null);
+      return;
+    }
+    if (!stable || Date.now() < captureBlockedUntil) {
+      setCountdown(null);
+      return;
+    }
+    if (countdown === null) {
+      setCountdown(3);
+      return;
+    }
+    if (countdown === 0) {
+      handleCapture();
+      setCountdown(null);
+      return;
+    }
+    const t = setTimeout(() => setCountdown((c) => (c === null ? null : c - 1)), 700);
+    return () => clearTimeout(t);
+  }, [stable, countdown, capturing, camReady, handleCapture, currentStep, captureBlockedUntil]);
+
   // Once all 5 frames are captured, upload the scan and trigger notification.
   useEffect(() => {
-    if (currentStep !== VIEWS.length || submit.status !== "idle") return;
+    if (!allCaptured || submit.status !== "idle") return;
     let cancelled = false;
 
     (async () => {
@@ -131,7 +182,7 @@ export default function ScanningFlow() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             status: "completed",
-            images: capturedImages,
+            images: capturedImages.filter((img): img is string => img !== null),
           }),
         });
         if (!res.ok) throw new Error(`Upload failed (${res.status})`);
@@ -150,9 +201,10 @@ export default function ScanningFlow() {
     return () => {
       cancelled = true;
     };
-  }, [currentStep, capturedImages, submit.status]);
+  }, [allCaptured, capturedImages, submit.status]);
 
-  const captureReady = camReady && (quality === "good" || quality === "fair");
+  const captureReady =
+    camReady && facePresent && (quality === "good" || quality === "fair");
   const scanId = submit.status === "done" ? submit.scanId : null;
 
   const headerLabel = useMemo(
@@ -161,8 +213,8 @@ export default function ScanningFlow() {
   );
 
   return (
-    <div className="flex min-h-screen flex-col items-center bg-black text-white">
-      <div className="flex w-full items-center justify-between border-b border-zinc-800 bg-zinc-900/80 px-4 py-3 backdrop-blur">
+    <div className="flex h-[100svh] flex-col items-center overflow-hidden bg-black text-white">
+      <div className="flex w-full shrink-0 items-center justify-between border-b border-zinc-800 bg-zinc-900/80 px-4 py-2 backdrop-blur">
         <h1 className="text-sm font-semibold tracking-tight text-blue-400">
           DentalScan AI
         </h1>
@@ -171,7 +223,7 @@ export default function ScanningFlow() {
         </span>
       </div>
 
-      <div className="relative flex aspect-[3/4] w-full max-w-md items-center justify-center overflow-hidden bg-zinc-950">
+      <div className="relative flex min-h-0 w-full max-w-md flex-1 items-center justify-center overflow-hidden bg-zinc-950">
         {capturing ? (
           <>
             <video
@@ -190,12 +242,44 @@ export default function ScanningFlow() {
             )}
 
             {!camError && (
-              <MouthGuide
-                quality={camReady ? quality : "idle"}
-                stability={stability}
-                label={VIEWS[currentStep].label}
-                hint={VIEWS[currentStep].instruction}
-              />
+              <>
+                <MouthGuide
+                  quality={camReady && facePresent ? quality : "idle"}
+                  stability={stability}
+                  label={VIEWS[currentStep].label}
+                  hint={VIEWS[currentStep].instruction}
+                />
+                <div className="pointer-events-none absolute inset-x-0 top-6 flex flex-col items-center text-center">
+                  <p className="text-base font-semibold text-white drop-shadow">
+                    Say Cheese!
+                  </p>
+                  <p className="mt-1 text-xs text-zinc-200 drop-shadow">
+                    Open Mouth to Show the Teeth
+                  </p>
+                  <p className="mt-0.5 text-[10px] text-zinc-400 drop-shadow">
+                    Focus Teeth in the Highlighted Area
+                  </p>
+                </div>
+                <div className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center">
+                  <p className="text-[11px] uppercase tracking-[0.2em] text-zinc-300 drop-shadow">
+                    {VIEWS[currentStep].label}
+                  </p>
+                </div>
+                {countdown !== null && countdown > 0 && (
+                  <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                    <span
+                      key={countdown}
+                      className="countdown-num text-8xl font-thin tabular-nums leading-none text-white drop-shadow-[0_2px_16px_rgba(0,0,0,0.75)]"
+                    >
+                      {countdown}
+                    </span>
+                    <span
+                      key={`ring-${countdown}`}
+                      className="countdown-ring absolute h-24 w-24 rounded-full border border-white/70"
+                    />
+                  </div>
+                )}
+              </>
             )}
           </>
         ) : (
@@ -240,17 +324,17 @@ export default function ScanningFlow() {
         )}
       </div>
 
-      <div className="flex w-full flex-col items-center gap-3 px-6 py-6">
+      <div className="flex w-full shrink-0 flex-col items-center gap-2 px-6 py-3">
         {capturing ? (
           <>
             <button
               onClick={handleCapture}
               disabled={!captureReady}
               aria-label={`Capture ${VIEWS[currentStep].label}`}
-              className="group flex h-20 w-20 items-center justify-center rounded-full border-4 border-white transition-transform active:scale-90 disabled:cursor-not-allowed disabled:border-zinc-700"
+              className="group flex h-16 w-16 items-center justify-center rounded-full border-4 border-white transition-transform active:scale-90 disabled:cursor-not-allowed disabled:border-zinc-700"
             >
               <div
-                className={`flex h-16 w-16 items-center justify-center rounded-full transition-colors ${
+                className={`flex h-12 w-12 items-center justify-center rounded-full transition-colors ${
                   captureReady
                     ? quality === "good"
                       ? "bg-emerald-400"
@@ -259,16 +343,21 @@ export default function ScanningFlow() {
                 }`}
               >
                 <Camera
+                  size={18}
                   className={captureReady ? "text-black" : "text-zinc-400"}
                 />
               </div>
             </button>
             <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">
-              {captureReady
-                ? "Tap to capture"
-                : camReady
-                  ? "Waiting for a stable frame"
-                  : "Starting camera…"}
+              {countdown !== null
+                ? `Hold still — capturing in ${countdown}`
+                : captureReady
+                  ? "Hold still — auto-capturing"
+                  : !camReady
+                    ? "Starting camera…"
+                    : !facePresent
+                      ? "Center your face in the circle"
+                      : "Hold still — steadying"}
             </p>
           </>
         ) : (
@@ -281,7 +370,7 @@ export default function ScanningFlow() {
         )}
       </div>
 
-      <div className="flex w-full gap-2 overflow-x-auto px-4 pb-6">
+      <div className="flex w-full shrink-0 gap-2 overflow-x-auto px-4 pb-3">
         {VIEWS.map((v, i) => {
           const filled = Boolean(capturedImages[i]);
           const active = i === currentStep;
@@ -290,7 +379,7 @@ export default function ScanningFlow() {
               key={v.label}
               onClick={() => (filled ? handleRetake(i) : undefined)}
               disabled={!filled}
-              className={`relative flex h-20 w-16 shrink-0 flex-col overflow-hidden rounded-lg border-2 text-left transition ${
+              className={`relative flex h-14 w-12 shrink-0 flex-col overflow-hidden rounded-lg border-2 text-left transition ${
                 active
                   ? "border-blue-500 bg-blue-500/10"
                   : filled
@@ -300,18 +389,24 @@ export default function ScanningFlow() {
               aria-label={filled ? `Retake ${v.label}` : `${v.label} not yet captured`}
             >
               {filled ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={capturedImages[i]}
-                  alt={v.label}
-                  className="h-full w-full object-cover"
-                />
+                <>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={capturedImages[i] as string}
+                    alt={v.label}
+                    className="h-full w-full object-cover"
+                  />
+                  {/* X badge — signals the thumbnail is tappable to retake */}
+                  <div className="absolute left-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/70">
+                    <X size={9} className="text-white" />
+                  </div>
+                </>
               ) : (
                 <div className="flex h-full w-full items-center justify-center text-[10px] text-zinc-600">
                   {i + 1}
                 </div>
               )}
-              <span className="absolute inset-x-0 bottom-0 truncate bg-black/70 px-1 py-0.5 text-[9px] uppercase tracking-wider text-zinc-300">
+              <span className="absolute inset-x-0 bottom-0 truncate bg-black/70 px-1 py-0.5 text-[8px] uppercase tracking-wider text-zinc-300">
                 {v.label.replace(" View", "")}
               </span>
             </button>
