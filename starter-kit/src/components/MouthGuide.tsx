@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { memo } from "react";
 import type { Quality } from "@/hooks/useFrameStability";
 
 type Props = {
@@ -19,7 +19,7 @@ const STROKE: Record<Quality, string> = {
 
 const SEGMENTS = 48;
 
-export default function MouthGuide({ quality, stability }: Props) {
+function MouthGuide({ quality, stability }: Props) {
   const stroke = STROKE[quality];
   const progress = Math.max(0, Math.min(1, stability));
   const filled = Math.round(progress * SEGMENTS);
@@ -98,3 +98,5 @@ export default function MouthGuide({ quality, stability }: Props) {
     </div>
   );
 }
+
+export default memo(MouthGuide);

@@ -42,6 +42,11 @@ export function useFrameStability(
   const [quality, setQuality] = useState<Quality>("idle");
   const [facePresent, setFacePresent] = useState(false);
   const stabilityRef = useRef(0);
+  // Refs track last-committed values so we only call setState when something
+  // actually changed — prevents spurious re-renders on every RAF tick.
+  const lastQualityRef = useRef<Quality>("idle");
+  const lastFacePresentRef = useRef(false);
+  const lastStabilityRef = useRef(0);
 
   useEffect(() => {
     if (!active) {
@@ -49,6 +54,9 @@ export function useFrameStability(
       setStability(0);
       setFacePresent(false);
       stabilityRef.current = 0;
+      lastQualityRef.current = "idle";
+      lastFacePresentRef.current = false;
+      lastStabilityRef.current = 0;
       return;
     }
 
@@ -102,23 +110,36 @@ export function useFrameStability(
       }
       const totalPixels = sampleSize * sampleSize;
       const skinRatio = skinCount / totalPixels;
-      setFacePresent(skinRatio >= skinRatioThreshold);
+      const nextFacePresent = skinRatio >= skinRatioThreshold;
+      if (nextFacePresent !== lastFacePresentRef.current) {
+        lastFacePresentRef.current = nextFacePresent;
+        setFacePresent(nextFacePresent);
+      }
 
       if (prev) {
         const meanDiff = acc / totalPixels;
-        // 0 diff → 1.0 stability; ~30 diff → 0. Past 30 clamps to 0.
         const raw = Math.max(0, Math.min(1, 1 - meanDiff / 30));
         const smoothed =
           stabilityRef.current * smoothing + raw * (1 - smoothing);
         stabilityRef.current = smoothed;
-        setStability(smoothed);
-        setQuality(
+
+        // Quantise to 2 dp — avoids re-renders from sub-1% EMA drift.
+        const rounded = Math.round(smoothed * 100) / 100;
+        if (rounded !== lastStabilityRef.current) {
+          lastStabilityRef.current = rounded;
+          setStability(rounded);
+        }
+
+        const nextQuality: Quality =
           smoothed >= goodThreshold
             ? "good"
             : smoothed >= fairThreshold
               ? "fair"
-              : "poor",
-        );
+              : "poor";
+        if (nextQuality !== lastQualityRef.current) {
+          lastQualityRef.current = nextQuality;
+          setQuality(nextQuality);
+        }
       }
 
       // Copy into a fresh buffer — the ImageData.data view is reused.

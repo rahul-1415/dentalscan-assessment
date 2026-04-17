@@ -228,7 +228,7 @@ export default function ScanningFlow() {
         </span>
       </div>
 
-      <div className="relative flex min-h-0 w-full max-w-md flex-1 items-center justify-center overflow-hidden bg-zinc-950">
+      <div className="relative flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden bg-zinc-950">
         {capturing ? (
           <>
             <video

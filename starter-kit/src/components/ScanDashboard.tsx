@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { CheckCircle2, Loader2, RefreshCw, Send } from "lucide-react";
+import { CheckCircle2, Loader2, MessageCircle, RefreshCw, Send } from "lucide-react";
 
 type Message = {
   id: string;
@@ -31,6 +31,7 @@ export default function ScanDashboard({
   viewLabels,
   onReset,
 }: Props) {
+  const [chatOpen, setChatOpen] = useState(false);
   const [thread, setThread] = useState<Thread | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
@@ -56,8 +57,8 @@ export default function ScanDashboard({
   }, []);
 
   useEffect(() => {
-    void loadThread();
-  }, [loadThread]);
+    if (chatOpen && !thread) void loadThread();
+  }, [chatOpen, thread, loadThread]);
 
   useEffect(() => {
     if (scrollerRef.current) {
@@ -148,8 +149,24 @@ export default function ScanDashboard({
 
       <div className="mx-5 shrink-0 border-t border-zinc-800" />
 
-      {/* Messaging — fills remaining space */}
-      <div className="flex min-h-0 flex-1 flex-col">
+      {/* Chat trigger */}
+      {!chatOpen && (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-5">
+          <button
+            onClick={() => setChatOpen(true)}
+            className="inline-flex items-center gap-2 rounded-full bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-lg shadow-blue-900/30 transition hover:bg-blue-500 active:scale-95"
+          >
+            <MessageCircle size={16} />
+            Chat with Clinic
+          </button>
+          <p className="text-[11px] text-zinc-500">
+            Ask the clinic anything about your scan
+          </p>
+        </div>
+      )}
+
+      {/* Messaging — fills remaining space once opened */}
+      {chatOpen && <div className="flex min-h-0 flex-1 flex-col">
         <p className="shrink-0 px-5 py-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
           Clinic chat
         </p>
@@ -241,7 +258,7 @@ export default function ScanDashboard({
             </button>
           </form>
         </div>
-      </div>
+      </div>}
 
       {/* New scan CTA */}
       <div className="shrink-0 border-t border-zinc-800 px-5 py-3">
