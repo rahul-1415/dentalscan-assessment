@@ -1,5 +1,7 @@
 # DentalScan — Technical & UX Audit
 
+**Demo Video:** [Watch on Loom](https://www.loom.com/share/2946c7206ac942c19a8292d8479cf05e)
+
 **Note on authorship:** The prompt and raw observations below are mine (from hands-on testing at dentalscan.us). I used them as a draft brief and had an AI assistant expand them into the polished audit that follows. All findings, screenshots, and opinions are my own — the AI only handled wording and structure.
 
 ## UX observations (Discovery Scan on mobile)

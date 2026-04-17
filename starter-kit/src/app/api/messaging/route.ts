@@ -94,10 +94,6 @@ export async function POST(req: Request) {
     const thread = await resolveThread(body.threadId, patientId);
 
     // [R3: State Consistency — $transaction]
-    // Message creation and thread.updatedAt bump happen atomically.
-    // If either write fails the DB rolls back, leaving no orphaned message
-    // with a stale thread cursor. The clinic inbox sorts by updatedAt so
-    // this also keeps the recency order correct.
     const [message] = await prisma.$transaction([
       prisma.message.create({
         data: { threadId: thread.id, content, sender },
@@ -108,7 +104,26 @@ export async function POST(req: Request) {
       }),
     ]);
 
-    return NextResponse.json({ ok: true, thread, message }, { status: 201 });
+    // Auto-reply only on the first patient message in the thread so the
+    // clinic bot doesn't fire on every subsequent message.
+    let autoReply = null;
+    if (sender === "patient") {
+      const existingCount = await prisma.message.count({
+        where: { threadId: thread.id, sender: "dentist" },
+      });
+      if (existingCount === 0) {
+        autoReply = await prisma.message.create({
+          data: {
+            threadId: thread.id,
+            sender: "dentist",
+            content:
+              "Thanks for reaching out! Please wait while we connect you with the clinic team. A dentist will review your scan and get back to you shortly.",
+          },
+        });
+      }
+    }
+
+    return NextResponse.json({ ok: true, thread, message, autoReply }, { status: 201 });
   } catch (err) {
     console.error("[messaging] POST failed", err);
     return NextResponse.json({ error: "Failed to send message" }, { status: 500 });

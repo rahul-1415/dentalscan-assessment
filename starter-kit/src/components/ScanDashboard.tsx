@@ -107,10 +107,13 @@ export default function ScanDashboard({ scanId, capturedImages, viewLabels, onRe
         body: JSON.stringify({ threadId: thread?.id, sender: "patient", content: trimmed, scanId }),
       });
       if (!res.ok) throw new Error(`Send failed (${res.status})`);
-      const data = (await res.json()) as { thread: Thread; message: Message };
+      const data = (await res.json()) as { thread: Thread; message: Message; autoReply?: Message };
       setThread(data.thread);
-      // [R3: Replace temp message with server-confirmed record]
-      setMessages((prev) => prev.map((m) => (m.id === tempId ? data.message : m)));
+      // [R3: Replace temp message with server-confirmed record, then append auto-reply if present]
+      setMessages((prev) => {
+        const confirmed = prev.map((m) => (m.id === tempId ? data.message : m));
+        return data.autoReply ? [...confirmed, data.autoReply] : confirmed;
+      });
     } catch (e) {
       // [R3: Rollback — remove optimistic message and restore draft]
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
