@@ -7,9 +7,9 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Camera, CheckCircle2, Loader2, RefreshCw, X } from "lucide-react";
+import { Camera, Loader2, X } from "lucide-react";
 import MouthGuide from "./MouthGuide";
-import QuickMessageSidebar from "./QuickMessageSidebar";
+import ScanDashboard from "./ScanDashboard";
 import { useFrameStability } from "@/hooks/useFrameStability";
 
 type View = {
@@ -45,6 +45,9 @@ export default function ScanningFlow() {
   const [currentStep, setCurrentStep] = useState(0);
   const [captureBlockedUntil, setCaptureBlockedUntil] = useState(0);
   const [submit, setSubmit] = useState<SubmitState>({ status: "idle" });
+  // Tracks whether we've started an upload for the current completed set so
+  // the upload effect doesn't re-fire when submit.status changes mid-flight.
+  const uploadStarted = useRef(false);
 
   const allCaptured = capturedImages.every((img) => img !== null);
   const capturing = !allCaptured;
@@ -112,21 +115,18 @@ export default function ScanningFlow() {
     if (!ctx) return;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
-    setCapturedImages((prev) => {
-      const next = [...prev];
-      next[currentStep] = dataUrl;
-      // After filling the current slot, advance to the next empty slot (if any)
-      // so retakes return control to wherever the user still has gaps.
-      const nextEmpty = next.findIndex((img) => img === null);
-      setCurrentStep(nextEmpty === -1 ? VIEWS.length : nextEmpty);
-      return next;
-    });
-    // Block auto-capture for 2 s after each shot so the user can reposition.
+    // Build the new images array here so we can derive next step without
+    // calling setCurrentStep inside a state updater (which must be pure).
+    const nextImages = [...capturedImages];
+    nextImages[currentStep] = dataUrl;
+    setCapturedImages(nextImages);
+    const nextEmpty = nextImages.findIndex((img) => img === null);
+    setCurrentStep(nextEmpty === -1 ? VIEWS.length : nextEmpty);
     setCaptureBlockedUntil(Date.now() + 2000);
-    setSubmit({ status: "idle" });
-  }, [currentStep]);
+  }, [currentStep, capturedImages]);
 
   const handleRetake = useCallback((index: number) => {
+    uploadStarted.current = false;
     setCapturedImages((prev) => {
       const next = [...prev];
       next[index] = null;
@@ -137,6 +137,7 @@ export default function ScanningFlow() {
   }, []);
 
   const handleReset = useCallback(() => {
+    uploadStarted.current = false;
     setCapturedImages(Array(VIEWS.length).fill(null));
     setCurrentStep(0);
     setSubmit({ status: "idle" });
@@ -170,42 +171,46 @@ export default function ScanningFlow() {
   }, [stable, countdown, capturing, camReady, handleCapture, currentStep, captureBlockedUntil]);
 
   // Once all 5 frames are captured, upload the scan and trigger notification.
+  // uploadStarted ref prevents re-firing when submit.status changes mid-flight,
+  // which would otherwise cancel the in-progress fetch via the cleanup function.
   useEffect(() => {
-    if (!allCaptured || submit.status !== "idle") return;
-    let cancelled = false;
+    if (!allCaptured || uploadStarted.current) return;
+    uploadStarted.current = true;
 
-    (async () => {
-      setSubmit({ status: "submitting" });
-      try {
-        const res = await fetch("/api/scans", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            status: "completed",
-            images: capturedImages.filter((img): img is string => img !== null),
-          }),
-        });
+    let cancelled = false;
+    setSubmit({ status: "submitting" });
+
+    fetch("/api/scans", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        status: "completed",
+        images: capturedImages.filter((img): img is string => img !== null),
+      }),
+    })
+      .then((res) => {
         if (!res.ok) throw new Error(`Upload failed (${res.status})`);
-        const data = (await res.json()) as { scan: { id: string } };
+        return res.json() as Promise<{ scan: { id: string } }>;
+      })
+      .then((data) => {
         if (!cancelled) setSubmit({ status: "done", scanId: data.scan.id });
-      } catch (e) {
-        if (!cancelled) {
+      })
+      .catch((e: unknown) => {
+        if (!cancelled)
           setSubmit({
             status: "error",
             message: e instanceof Error ? e.message : "Upload failed",
           });
-        }
-      }
-    })();
+      });
 
     return () => {
       cancelled = true;
     };
-  }, [allCaptured, capturedImages, submit.status]);
+  }, [allCaptured, capturedImages]);
 
   const captureReady =
     camReady && facePresent && (quality === "good" || quality === "fair");
-  const scanId = submit.status === "done" ? submit.scanId : null;
+
 
   const headerLabel = useMemo(
     () => (capturing ? VIEWS[currentStep].label : "Scan complete"),
@@ -283,50 +288,41 @@ export default function ScanningFlow() {
             )}
           </>
         ) : (
-          <div className="flex flex-col items-center gap-4 p-10 text-center">
-            {submit.status === "submitting" && (
-              <>
-                <Loader2 size={40} className="animate-spin text-blue-400" />
-                <h2 className="text-lg font-semibold">Uploading your scan…</h2>
-                <p className="text-xs text-zinc-400">
-                  Securely sending {capturedImages.length} frames to the clinic.
-                </p>
-              </>
-            )}
-            {submit.status === "done" && (
-              <>
-                <CheckCircle2 size={44} className="text-emerald-400" />
-                <h2 className="text-lg font-semibold">Scan uploaded</h2>
-                <p className="max-w-xs text-xs text-zinc-400">
-                  Your clinic has been notified. They&apos;ll review the scan and
-                  reply in the chat below.
-                </p>
-                <p className="text-[10px] text-zinc-600">
-                  Reference: {submit.scanId.slice(0, 12)}
-                </p>
-              </>
-            )}
-            {submit.status === "error" && (
-              <>
-                <h2 className="text-lg font-semibold text-red-300">
-                  Upload failed
-                </h2>
-                <p className="text-xs text-zinc-400">{submit.message}</p>
-                <button
-                  onClick={() => setSubmit({ status: "idle" })}
-                  className="rounded-full border border-zinc-700 px-4 py-1.5 text-xs text-zinc-200 hover:border-blue-500"
-                >
-                  Retry upload
-                </button>
-              </>
-            )}
-          </div>
+          /* Upload / dashboard state */
+          submit.status === "submitting" ? (
+            <div className="flex flex-col items-center justify-center gap-3 p-10 text-center">
+              <Loader2 size={40} className="animate-spin text-blue-400" />
+              <h2 className="text-lg font-semibold">Uploading your scan…</h2>
+              <p className="text-xs text-zinc-400">
+                Securely sending {capturedImages.filter(Boolean).length} frames to the clinic.
+              </p>
+            </div>
+          ) : submit.status === "error" ? (
+            <div className="flex flex-col items-center justify-center gap-3 p-10 text-center">
+              <h2 className="text-lg font-semibold text-red-300">Upload failed</h2>
+              <p className="text-xs text-zinc-400">{submit.message}</p>
+              <button
+                onClick={() => { uploadStarted.current = false; setSubmit({ status: "idle" }); }}
+                className="rounded-full border border-zinc-700 px-4 py-1.5 text-xs text-zinc-200 hover:border-blue-500"
+              >
+                Retry upload
+              </button>
+            </div>
+          ) : submit.status === "done" ? (
+            <ScanDashboard
+              scanId={submit.scanId}
+              capturedImages={capturedImages}
+              viewLabels={VIEWS.map((v) => v.label)}
+              onReset={handleReset}
+            />
+          ) : null
         )}
       </div>
 
-      <div className="flex w-full shrink-0 flex-col items-center gap-2 px-6 py-3">
-        {capturing ? (
-          <>
+      {/* Capture button + thumbnails only shown while scanning */}
+      {capturing && (
+        <>
+          <div className="flex w-full shrink-0 flex-col items-center gap-2 px-6 py-3">
             <button
               onClick={handleCapture}
               disabled={!captureReady}
@@ -359,65 +355,52 @@ export default function ScanningFlow() {
                       ? "Center your face in the circle"
                       : "Hold still — steadying"}
             </p>
-          </>
-        ) : (
-          <button
-            onClick={handleReset}
-            className="inline-flex items-center gap-2 rounded-full border border-zinc-700 px-4 py-2 text-xs text-zinc-300 hover:border-blue-500 hover:text-white"
-          >
-            <RefreshCw size={14} /> Start a new scan
-          </button>
-        )}
-      </div>
+          </div>
 
-      <div className="flex w-full shrink-0 gap-2 overflow-x-auto px-4 pb-3">
-        {VIEWS.map((v, i) => {
-          const filled = Boolean(capturedImages[i]);
-          const active = i === currentStep;
-          return (
-            <button
-              key={v.label}
-              onClick={() => (filled ? handleRetake(i) : undefined)}
-              disabled={!filled}
-              className={`relative flex h-14 w-12 shrink-0 flex-col overflow-hidden rounded-lg border-2 text-left transition ${
-                active
-                  ? "border-blue-500 bg-blue-500/10"
-                  : filled
-                    ? "border-zinc-700 hover:border-blue-500"
-                    : "border-zinc-800"
-              }`}
-              aria-label={filled ? `Retake ${v.label}` : `${v.label} not yet captured`}
-            >
-              {filled ? (
-                <>
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={capturedImages[i] as string}
-                    alt={v.label}
-                    className="h-full w-full object-cover"
-                  />
-                  {/* X badge — signals the thumbnail is tappable to retake */}
-                  <div className="absolute left-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/70">
-                    <X size={9} className="text-white" />
-                  </div>
-                </>
-              ) : (
-                <div className="flex h-full w-full items-center justify-center text-[10px] text-zinc-600">
-                  {i + 1}
-                </div>
-              )}
-              <span className="absolute inset-x-0 bottom-0 truncate bg-black/70 px-1 py-0.5 text-[8px] uppercase tracking-wider text-zinc-300">
-                {v.label.replace(" View", "")}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-
-      <QuickMessageSidebar
-        scanId={scanId}
-        defaultOpen={submit.status === "done"}
-      />
+          <div className="flex w-full shrink-0 gap-2 overflow-x-auto px-4 pb-3">
+            {VIEWS.map((v, i) => {
+              const filled = Boolean(capturedImages[i]);
+              const active = i === currentStep;
+              return (
+                <button
+                  key={v.label}
+                  onClick={() => (filled ? handleRetake(i) : undefined)}
+                  disabled={!filled}
+                  className={`relative flex h-14 w-12 shrink-0 flex-col overflow-hidden rounded-lg border-2 text-left transition ${
+                    active
+                      ? "border-blue-500 bg-blue-500/10"
+                      : filled
+                        ? "border-zinc-700 hover:border-blue-500"
+                        : "border-zinc-800"
+                  }`}
+                  aria-label={filled ? `Retake ${v.label}` : `${v.label} not yet captured`}
+                >
+                  {filled ? (
+                    <>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={capturedImages[i] as string}
+                        alt={v.label}
+                        className="h-full w-full object-cover"
+                      />
+                      <div className="absolute left-0.5 top-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-black/70">
+                        <X size={9} className="text-white" />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center text-[10px] text-zinc-600">
+                      {i + 1}
+                    </div>
+                  )}
+                  <span className="absolute inset-x-0 bottom-0 truncate bg-black/70 px-1 py-0.5 text-[8px] uppercase tracking-wider text-zinc-300">
+                    {v.label.replace(" View", "")}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }
